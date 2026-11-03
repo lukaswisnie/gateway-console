@@ -243,7 +243,9 @@ async function startSignIn() {
     return;
   }
   const since = Date.now() - 60_000;
-  state.poll = setInterval(pollSignIn, 3000);
+  state.approveClicked = false;
+  state.waitStart = null;
+  state.poll = setInterval(pollSignIn, 2000);
   pollSignIn();
 
   async function pollSignIn() {
@@ -256,26 +258,33 @@ async function startSignIn() {
       const jobs = await api(`/repos/${state.repo}/actions/runs/${run.id}/jobs`);
       const job = (jobs.jobs || [])[0];
       if (job) renderSteps(job);
-      // Show the approval link as soon as it is available.
+      // Show the approval link as soon as it is available — the one for THIS run.
       if (!state.approveUrl) {
         const st = await api(`/repos/${state.repo}/commits/${run.head_sha}/status`);
-        const s = (st.statuses || []).find(x => x.context === "gateway-sign-in");
-        if (s && s.state === "pending" && s.target_url) {
+        const pendings = (st.statuses || []).filter(x => x.context === "gateway-sign-in"
+          && x.state === "pending" && x.target_url);
+        const s = pendings.find(x => (x.description || "").includes(`run ${run.id}`))
+               || pendings.sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))[0];
+        if (s) {
           state.approveUrl = s.target_url;
+          state.waitStart = Date.now();
           const c = (s.description || "").match(/code[: ]+([A-Z0-9-]+)/i);
           $("approve-text").textContent = "Approval needed — open the page and approve with the CI account:";
           $("approve-code").textContent = c ? "Code: " + c[1] : "";
           $("approve").className = "approve show";
         }
       }
+      const elapsed = state.waitStart ? Math.round((Date.now() - state.waitStart) / 1000) : 0;
       // As soon as the approval step is over, retire the approve card and say what runs now.
       const waitStep = job && (job.steps || []).find(x => x.name === "Wait for approval");
       if (state.approveUrl && waitStep && waitStep.status === "completed") {
         $("approve").className = "approve";
         if (waitStep.conclusion === "success")
           setStatusLive(st, "Approval received ✓ Saving the sign-in…");
+      } else if (state.approveUrl && state.approveClicked) {
+        setStatusLive(st, `Picking up your approval — can take a few seconds… (${elapsed}s)`);
       } else if (state.approveUrl) {
-        setStatusLive(st, "Waiting for your approval…");
+        setStatusLive(st, `Waiting for your approval… (${elapsed}s)`);
       } else if (run.status !== "completed") {
         setStatusLive(st, "Sign-in running, waiting for the approval link…");
       }
@@ -422,7 +431,12 @@ $("connect").addEventListener("click", connect);
 $("pat").addEventListener("keydown", e => { if (e.key === "Enter") connect(); });
 $("forget").addEventListener("click", forget);
 $("start").addEventListener("click", startSignIn);
-$("approve-open").addEventListener("click", () => state.approveUrl && window.open(state.approveUrl, "_blank"));
+$("approve-open").addEventListener("click", () => {
+  if (!state.approveUrl) return;
+  state.approveClicked = true;
+  $("approve-text").textContent = "Once you have approved in the other tab, this page picks it up within a few seconds — it can take up to ~15 s.";
+  window.open(state.approveUrl, "_blank");
+});
 $("health-refresh").addEventListener("click", refreshHealth);
 $("health-run").addEventListener("click", () => runHealthNow());
 
