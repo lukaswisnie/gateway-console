@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>Claude Gateway Console</title>
+<title>AI Gateway Console</title>
 <style>
   :root {
     --bg: #0d1117; --card: #161b22; --border: #30363d; --text: #e6edf3;
@@ -65,15 +65,13 @@
 </head>
 <body>
 <main>
-  <h1>Claude Gateway Console</h1>
-  <p class="sub">Sign the repository's CI in to the Claude apps gateway and watch its health — a thin GUI over the
-    <code>Gateway — Sign-in</code> and <code>Gateway — Health</code> GitHub Actions workflows.</p>
+  <h1>AI Gateway Console</h1>
+  <p class="sub">Sign the repository's CI in to the AI gateway and check that it stays signed in.</p>
 
   <div class="card" id="connect-card">
     <h2>1 · Connect</h2>
-    <p class="desc">Needs a GitHub token with access to the repository:
-      <b>Actions</b> read/write, <b>Secrets</b> read, <b>Commit statuses</b> read (a classic PAT with <code>repo</code> scope also works).
-      Sent only to <code>api.github.com</code> — kept in this tab (session storage), or on this device if you tick "remember".</p>
+    <p class="desc">Needs a GitHub token with access to the repository (a full-access personal or fine-grained token works).
+      Sent only to <code>api.github.com</code> — kept in this tab, or on this device if you tick "remember".</p>
     <label for="repo">Repository (owner/name)</label>
     <input id="repo" placeholder="owner/repo" spellcheck="false">
     <label for="pat">GitHub token</label>
@@ -89,9 +87,9 @@
 
   <div class="card" id="signin-card" hidden>
     <h2>2 · CI sign-in</h2>
-    <p class="desc">Starts the device login on a GitHub runner. When the approval link appears, open it and approve
-      with the Google account CI should be attributed to (a dedicated one, not a personal). The workflow stores the
-      <code>GW_REFRESH_TOKEN</code> and <code>GW_CERT_PIN</code> secrets itself — nothing to copy.</p>
+    <p class="desc">Starts the sign-in for CI. When the approval link appears, open it and approve with the account
+      CI should act on behalf of (a dedicated account, not a personal one). Everything else, credentials included,
+      is handled for you — nothing to copy.</p>
     <button class="primary big" id="start">Start CI sign-in</button>
     <div class="approve" id="approve">
       <div id="approve-text"></div>
@@ -103,19 +101,18 @@
   </div>
 
   <div class="card" id="health-card" hidden>
-    <h2>3 · Gateway health</h2>
-    <p class="desc">The daily check that the CI sign-in, the certificate pin and the pinned models still work.
-      A health check runs automatically after every CI sign-in to verify the new sign-in.</p>
+    <h2>3 · Health</h2>
+    <p class="desc">Regular automatic checks that the CI sign-in still works. A check also runs automatically
+      after every sign-in, so a fresh sign-in is always verified.</p>
     <div class="row">
       <span id="health-pill" class="pill run">…</span>
       <button id="health-refresh">Refresh</button>
-      <button id="health-run">Run health check now</button>
+      <button id="health-run">Run a check now</button>
     </div>
     <div class="kv" id="health-detail"></div>
   </div>
 
-  <p class="note">Proof of concept · no server, no cookies, no analytics ·
-    runbook: docs/agents/claude-pr-review.md in the repository</p>
+  <p class="note">Runs entirely in your browser · no server · no cookies · no analytics</p>
 </main>
 
 <script>
@@ -197,12 +194,12 @@ async function connect() {
 /* ---------- CI sign-in ---------- */
 
 const STEP_LABELS = [
-  ["Set up job", "Preparing the runner"],
+  ["Set up job", "Preparing"],
   ["Check prerequisites", "Checking prerequisites"],
-  ["Start the device login", "Starting the device login"],
-  ["Publish the approval link", "Publishing the approval link"],
-  ["Wait for approval", "Waiting for your browser approval"],
-  ["Store the sign-in secrets", "Storing the sign-in secrets"],
+  ["Start the device login", "Requesting the sign-in"],
+  ["Publish the approval link", "Making the approval link available"],
+  ["Wait for approval", "Waiting for your approval"],
+  ["Store the sign-in secrets", "Saving the sign-in"],
   ["Close the approval notice", "Finishing up"],
 ];
 
@@ -236,10 +233,10 @@ async function startSignIn() {
   const st = $("signin-status");
   hideSteps();
   try {
-    setStatusLive(st, "Dispatching the sign-in workflow…");
+    setStatusLive(st, "Starting the sign-in…");
     await api(`/repos/${state.repo}/actions/workflows/gateway-login.yml/dispatches`,
       { method: "POST", body: JSON.stringify({ ref: state.branch }) });
-    setStatusLive(st, "Sign-in workflow dispatched. Waiting for the approval link…");
+    setStatusLive(st, "Sign-in started. Waiting for the approval link…");
   } catch (e) {
     setStatus(st, e.message, "err");
     $("start").disabled = false;
@@ -259,7 +256,7 @@ async function startSignIn() {
       const jobs = await api(`/repos/${state.repo}/actions/runs/${run.id}/jobs`);
       const job = (jobs.jobs || [])[0];
       if (job) renderSteps(job);
-      // Show the approval link as soon as the workflow publishes it.
+      // Show the approval link as soon as it is available.
       if (!state.approveUrl) {
         const st = await api(`/repos/${state.repo}/commits/${run.head_sha}/status`);
         const s = (st.statuses || []).find(x => x.context === "gateway-sign-in");
@@ -276,11 +273,11 @@ async function startSignIn() {
       if (state.approveUrl && waitStep && waitStep.status === "completed") {
         $("approve").className = "approve";
         if (waitStep.conclusion === "success")
-          setStatusLive(st, "Approval received ✓ The workflow is storing the sign-in secrets…");
+          setStatusLive(st, "Approval received ✓ Saving the sign-in…");
       } else if (state.approveUrl) {
-        setStatusLive(st, "Waiting for the browser approval…");
+        setStatusLive(st, "Waiting for your approval…");
       } else if (run.status !== "completed") {
-        setStatusLive(st, "Sign-in workflow running, waiting for the approval link…");
+        setStatusLive(st, "Sign-in running, waiting for the approval link…");
       }
       if (run.status !== "completed") return;
       stopPoll();
@@ -288,22 +285,21 @@ async function startSignIn() {
       hideSteps();
       $("approve").className = "approve";
       if (run.conclusion === "success") {
-        setStatusLive(st, "Sign-in workflow finished ✓ Reading the secrets' timestamps…", "ok");
-        let info = "GW_REFRESH_TOKEN / GW_CERT_PIN stored (timestamp unknown: the token needs Secrets read)";
+        setStatusLive(st, "Sign-in finished ✓ Reading the confirmation…", "ok");
+        let info = "Sign-in credentials saved (confirmation unavailable)";
         try {
           const secrets = await api(`/repos/${state.repo}/actions/secrets`);
           const get = n => (secrets.secrets || []).find(s => s.name === n);
           const rt = get("GW_REFRESH_TOKEN"), pin = get("GW_CERT_PIN");
-          info = `GW_REFRESH_TOKEN updated ${rt ? new Date(rt.updated_at).toLocaleString() : "?"}\n` +
-                 `GW_CERT_PIN updated ${pin ? new Date(pin.updated_at).toLocaleString() : "?"}`;
+          info = rt && pin
+            ? `Sign-in credentials saved at ${new Date(rt.updated_at).toLocaleString()}`
+            : info;
         } catch { /* token without Secrets read */ }
-        setStatus(st, `CI is signed in ✓\n${info}\nVerifying with a gateway health check…`, "ok");
+        setStatus(st, `CI is signed in ✓\n${info}\nVerifying the new sign-in…`, "ok");
         runHealthNow(afterSignInCheck);
       } else {
-        const failed = job && (job.steps || []).filter(x => x.conclusion === "failure").map(x => x.name);
         setStatus(st,
-          `Sign-in workflow failed (${run.conclusion})` + (failed && failed.length ? ` at: ${failed.join(", ")}` : "") +
-          `. See the run log:\n${run.html_url}`, "err");
+          `Sign-in failed (${run.conclusion}). See the run log:\n${run.html_url}`, "err");
       }
     } catch (e) {
       stopPoll();
@@ -315,11 +311,11 @@ async function startSignIn() {
 
 function afterSignInCheck(conclusion, runUrl) {
   const st = $("signin-status");
-  const base = st.textContent.replace(/\nVerifying with a gateway health check…$/, "");
+  const base = st.textContent.replace(/\nVerifying the new sign-in…$/, "");
   if (conclusion === "success")
-    setStatus(st, base + "\nGateway health check after sign-in: healthy ✓", "ok");
+    setStatus(st, base + "\nNew sign-in verified ✓", "ok");
   else
-    setStatus(st, base + `\nGateway health check after sign-in: ${conclusion} — see ${runUrl}`, "err");
+    setStatus(st, base + `\nVerification after sign-in: ${conclusion} — see ${runUrl}`, "err");
 }
 
 /* ---------- Health ---------- */
@@ -342,8 +338,8 @@ async function refreshHealth() {
     if (!run) { detail.textContent = ""; return; }
     detail.innerHTML = `Last run: <a href="${run.html_url}" target="_blank">${new Date(run.created_at).toLocaleString()}</a>` +
       (run.status !== "completed" ? " — following the run live…" :
-        run.conclusion === "success" ? " — sign-in, certificate pin and models all OK." :
-        " — check the run; on failure it also opens a repo issue with what to update.");
+        run.conclusion === "success" ? " — all checks passed." :
+        " — check the run for details.");
     if (run.status !== "completed") followHealthRun(run.id); // someone else started it: follow live
   } catch (e) {
     pill.className = "pill err"; pill.textContent = "error";
@@ -363,8 +359,8 @@ function followHealthRun(runId) {
       healthPill(run);
       const detail = $("health-detail");
       detail.innerHTML = `Last run: <a href="${run.html_url}" target="_blank">${new Date(run.created_at).toLocaleString()}</a>` +
-        (run.conclusion === "success" ? " — sign-in, certificate pin and models all OK." :
-        " — check the run; on failure it also opens a repo issue with what to update.");
+        (run.conclusion === "success" ? " — all checks passed." :
+        " — check the run for details.");
       if (state.onHealthDone) { const cb = state.onHealthDone; state.onHealthDone = null; cb(run.conclusion, run.html_url); }
     } catch (e) {
       clearInterval(state.healthFollow); state.healthFollow = null;
@@ -378,7 +374,7 @@ function followHealthRun(runId) {
 async function runHealthNow(onDone) {
   $("health-run").disabled = true;
   $("health-pill").className = "pill run"; $("health-pill").textContent = "running…";
-  $("health-detail").textContent = "Health check dispatched, following the run…";
+  $("health-detail").textContent = "Check started, following the run…";
   try {
     await api(`/repos/${state.repo}/actions/workflows/gateway-health.yml/dispatches`,
       { method: "POST", body: JSON.stringify({ ref: state.branch }) });
