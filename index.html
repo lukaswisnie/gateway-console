@@ -193,18 +193,15 @@ async function startSignIn() {
       if (!run) return; // not registered yet
       // Show the approval link as soon as the workflow publishes it.
       if (!state.approveUrl) {
-        const checks = await api(`/repos/${state.repo}/commits/${run.head_sha}/check-runs?check_name=${encodeURIComponent("Gateway sign-in approval")}`);
-        const cr = (checks.check_runs || [])[0];
-        if (cr) {
-          const m = (cr.output.summary || "").match(/https:\/\/\S+/);
-          const c = (cr.output.summary || "").match(/Code:?\s*\*\*([^\*]+)\*\*/);
-          if (m) {
-            state.approveUrl = m[0];
-            $("approve-text").textContent = "Approval needed — open the page and approve with the CI account:";
-            $("approve-code").textContent = c ? "Code: " + c[1] : "";
-            $("approve").className = "approve show";
-            setStatus(st, "Waiting for the browser approval…");
-          }
+        const st = await api(`/repos/${state.repo}/commits/${run.head_sha}/status`);
+        const s = (st.statuses || []).find(x => x.context === "gateway-sign-in");
+        if (s && s.state === "pending" && s.target_url) {
+          state.approveUrl = s.target_url;
+          const c = (s.description || "").match(/code[: ]+([A-Z0-9-]+)/i);
+          $("approve-text").textContent = "Approval needed — open the page and approve with the CI account:";
+          $("approve-code").textContent = c ? "Code: " + c[1] : "";
+          $("approve").className = "approve show";
+          setStatus(st, "Waiting for the browser approval…");
         }
       }
       if (run.status !== "completed") {
