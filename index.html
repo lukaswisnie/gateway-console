@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Claude Gateway Console</title>
+<style>
+  :root {
+    --bg: #0d1117; --card: #161b22; --border: #30363d; --text: #e6edf3;
+    --muted: #8b949e; --accent: #2f81f7; --ok: #3fb950; --warn: #d29922; --err: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 28px; }
+  .card { background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px; margin-bottom: 20px; }
+  .card h2 { font-size: 15px; margin: 0 0 6px; }
+  .card .desc { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  input { width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-size: 13px; }
+  button { padding: 8px 14px; border-radius: 6px; border: 1px solid var(--border);
+    background: #21262d; color: var(--text); font-size: 13px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.big { font-size: 15px; padding: 10px 20px; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .status { margin-top: 14px; padding: 10px 12px; border-radius: 6px; font-size: 13px;
+    border: 1px solid var(--border); background: var(--bg); display: none; white-space: pre-wrap; }
+  .status.show { display: block; }
+  .status.ok { border-color: rgba(63,185,80,.4); }
+  .status.err { border-color: rgba(248,81,73,.4); }
+  .approve { margin-top: 14px; display: none; padding: 14px; border-radius: 8px;
+    border: 1px solid rgba(47,129,247,.5); background: rgba(47,129,247,.08); }
+  .approve.show { display: block; }
+  .approve .code { font-size: 20px; font-weight: 700; letter-spacing: 1px; margin: 6px 0; }
+  .kv { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; }
+  .pill.ok { background: rgba(63,185,80,.15); color: var(--ok); }
+  .pill.err { background: rgba(248,81,73,.15); color: var(--err); }
+  .pill.run { background: rgba(210,153,34,.15); color: var(--warn); }
+  a { color: var(--accent); }
+  .note { font-size: 12px; color: var(--muted); }
+  .spinner { display: inline-block; width: 12px; height: 12px; border-radius: 50%;
+    border: 2px solid var(--muted); border-top-color: transparent; animation: spin 1s linear infinite;
+    vertical-align: -1px; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Claude Gateway Console</h1>
+  <p class="sub">Sign the repository's CI in to the Claude apps gateway and watch its health — a thin GUI over the
+    <code>Gateway — Sign-in</code> and <code>Gateway — Health</code> GitHub Actions workflows.</p>
+
+  <div class="card" id="connect-card">
+    <h2>1 · Connect</h2>
+    <p class="desc">Needs a GitHub token with access to the repository:
+      <b>Actions</b> read/write, <b>Checks</b> read, <b>Secrets</b> read (a classic PAT with <code>repo</code> scope also works).
+      The token stays in this browser tab (session storage) and is sent only to <code>api.github.com</code>.</p>
+    <label for="repo">Repository (owner/name)</label>
+    <input id="repo" placeholder="owner/repo" spellcheck="false">
+    <label for="pat">GitHub token</label>
+    <input id="pat" type="password" placeholder="ghp_… / github_pat_…" spellcheck="false">
+    <div class="row" style="margin-top:12px">
+      <button class="primary" id="connect">Connect</button>
+      <span id="connect-status" class="note"></span>
+    </div>
+  </div>
+
+  <div class="card" id="signin-card" hidden>
+    <h2>2 · CI sign-in</h2>
+    <p class="desc">Starts the device login on a GitHub runner. When the approval link appears, open it and approve
+      with the Google account CI should be attributed to (a dedicated one, not a personal). The workflow stores the
+      <code>GW_REFRESH_TOKEN</code> and <code>GW_CERT_PIN</code> secrets itself — nothing to copy.</p>
+    <button class="primary big" id="start">Start CI sign-in</button>
+    <div class="approve" id="approve">
+      <div id="approve-text"></div>
+      <div class="code" id="approve-code"></div>
+      <button class="primary" id="approve-open">Open the approval page ↗</button>
+    </div>
+    <div class="status" id="signin-status"></div>
+  </div>
+
+  <div class="card" id="health-card" hidden>
+    <h2>3 · Gateway health</h2>
+    <p class="desc">The daily check that the CI sign-in, the certificate pin and the pinned models still work.</p>
+    <div class="row">
+      <span id="health-pill" class="pill run">…</span>
+      <button id="health-refresh">Refresh</button>
+      <button id="health-run">Run health check now</button>
+    </div>
+    <div class="kv" id="health-detail"></div>
+  </div>
+
+  <p class="note">Proof of concept · no server, no cookies, no analytics ·
+    runbook: docs/agents/claude-pr-review.md in the repository</p>
+</main>
+
+<script>
+"use strict";
+const API = "https://api.github.com";
+const $ = id => document.getElementById(id);
+const state = {
+  token: sessionStorage.getItem("gc_pat") || "",
+  repo: sessionStorage.getItem("gc_repo") || $("repo").value,
+  branch: null,
+  poll: null,        // interval id for the sign-in flow
+  healthPoll: null,
+  approveUrl: null,
+};
+
+function setStatus(el, text, cls) {
+  el.textContent = text;
+  el.className = "status show " + (cls || "");
+}
+function stopPoll() { if (state.poll) { clearInterval(state.poll); state.poll = null; } }
+
+async function api(path, opts = {}) {
+  const res = await fetch(API + path, {
+    ...opts,
+    headers: {
+      Authorization: "Bearer " + state.token,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      ...(opts.headers || {}),
+    },
+  });
+  if (res.status === 204) return null;
+  let body = null;
+  try { body = await res.json(); } catch { /* empty body */ }
+  if (!res.ok) {
+    const msg = body && body.message ? body.message : res.statusText;
+    const hint = res.status === 401 ? " — token invalid or expired"
+      : res.status === 403 ? " — token lacks the required permissions"
+      : res.status === 404 ? " — no access to this repository (wrong name or token)"
+      : res.status === 422 ? " — workflow has no manual trigger or ref missing on the default branch"
+      : "";
+    throw new Error(`GitHub API ${res.status}: ${msg}${hint}`);
+  }
+  return body;
+}
+
+async function connect() {
+  state.token = $("pat").value.trim();
+  state.repo = $("repo").value.trim().replace(/^https:\/\/github\.com\//, "").replace(/\.git$/, "");
+  if (!state.token || !state.repo) { $("connect-status").textContent = "Enter the repository and a token."; return; }
+  $("connect-status").textContent = "Connecting…";
+  try {
+    const repo = await api("/repos/" + state.repo);
+    state.branch = repo.default_branch;
+    sessionStorage.setItem("gc_pat", state.token);
+    sessionStorage.setItem("gc_repo", state.repo);
+    $("connect-status").textContent = `Connected · ${repo.full_name} (default branch: ${state.branch})`;
+    for (const c of ["signin-card", "health-card"]) $(c).hidden = false;
+    refreshHealth();
+  } catch (e) {
+    $("connect-status").className = "note";
+    $("connect-status").textContent = e.message;
+  }
+}
+
+/* ---------- CI sign-in ---------- */
+
+async function startSignIn() {
+  stopPoll();
+  $("approve").className = "approve";
+  state.approveUrl = null;
+  $("start").disabled = true;
+  const st = $("signin-status");
+  try {
+    setStatus(st, "Starting the sign-in workflow…");
+    await api(`/repos/${state.repo}/actions/workflows/gateway-login.yml/dispatches`,
+      { method: "POST", body: JSON.stringify({ ref: state.branch }) });
+    setStatus(st, "Sign-in workflow dispatched. Waiting for the approval link…");
+  } catch (e) {
+    setStatus(st, e.message, "err");
+    $("start").disabled = false;
+    return;
+  }
+  const since = Date.now() - 60_000;
+  state.poll = setInterval(pollSignIn, 3000);
+  pollSignIn();
+
+  async function pollSignIn() {
+    try {
+      const runs = await api(`/repos/${state.repo}/actions/workflows/gateway-login.yml/runs?per_page=3`);
+      const run = (runs.workflow_runs || []).find(r => Date.parse(r.created_at) >= since);
+      if (!run) return; // not registered yet
+      // Show the approval link as soon as the workflow publishes it.
+      if (!state.approveUrl) {
+        const checks = await api(`/repos/${state.repo}/commits/${run.head_sha}/check-runs?check_name=${encodeURIComponent("Gateway sign-in approval")}`);
+        const cr = (checks.check_runs || [])[0];
+        if (cr) {
+          const m = (cr.output.summary || "").match(/https:\/\/\S+/);
+          const c = (cr.output.summary || "").match(/Code:?\s*\*\*([^\*]+)\*\*/);
+          if (m) {
+            state.approveUrl = m[0];
+            $("approve-text").textContent = "Approval needed — open the page and approve with the CI account:";
+            $("approve-code").textContent = c ? "Code: " + c[1] : "";
+            $("approve").className = "approve show";
+            setStatus(st, "Waiting for the browser approval…");
+          }
+        }
+      }
+      if (run.status !== "completed") {
+        if (!state.approveUrl && !st.textContent.includes("Waiting"))
+          setStatus(st, "Sign-in workflow running, waiting for the approval link…");
+        return;
+      }
+      stopPoll();
+      $("start").disabled = false;
+      if (run.conclusion === "success") {
+        setStatus(st, "Signed in ✓ Checking the secrets…");
+        const secrets = await api(`/repos/${state.repo}/actions/secrets`);
+        const get = n => (secrets.secrets || []).find(s => s.name === n);
+        const rt = get("GW_REFRESH_TOKEN"), pin = get("GW_CERT_PIN");
+        setStatus(st,
+          `CI is signed in ✓\nGW_REFRESH_TOKEN updated ${rt ? new Date(rt.updated_at).toLocaleString() : "?"}\nGW_CERT_PIN updated ${pin ? new Date(pin.updated_at).toLocaleString() : "?"}`,
+          "ok");
+        $("approve").className = "approve";
+        refreshHealth();
+      } else {
+        setStatus(st, `Sign-in workflow failed (${run.conclusion}). See the run log:\n${run.html_url}`, "err");
+      }
+    } catch (e) {
+      stopPoll();
+      $("start").disabled = false;
+      setStatus(st, e.message, "err");
+    }
+  }
+}
+
+/* ---------- Health ---------- */
+
+async function refreshHealth() {
+  const pill = $("health-pill"), detail = $("health-detail");
+  pill.className = "pill run"; pill.textContent = "…";
+  try {
+    const runs = await api(`/repos/${state.repo}/actions/workflows/gateway-health.yml/runs?per_page=1`);
+    const run = (runs.workflow_runs || [])[0];
+    if (!run) { pill.className = "pill run"; pill.textContent = "no runs yet"; return; }
+    if (run.status !== "completed") { pill.className = "pill run"; pill.textContent = "running…"; }
+    else if (run.conclusion === "success") { pill.className = "pill ok"; pill.textContent = "healthy"; }
+    else { pill.className = "pill err"; pill.textContent = run.conclusion; }
+    detail.innerHTML = `Last run: <a href="${run.html_url}" target="_blank">${new Date(run.created_at).toLocaleString()}</a>` +
+      (run.conclusion === "success" ? " — sign-in, certificate pin and models all OK." :
+        " — check the run; on failure it also opens a repo issue with what to update.");
+  } catch (e) {
+    pill.className = "pill err"; pill.textContent = "error";
+    detail.textContent = e.message;
+  }
+}
+
+async function runHealthNow() {
+  $("health-run").disabled = true;
+  try {
+    await api(`/repos/${state.repo}/actions/workflows/gateway-health.yml/dispatches`,
+      { method: "POST", body: JSON.stringify({ ref: state.branch }) });
+    if (state.healthPoll) clearInterval(state.healthPoll);
+    const since = Date.now() - 60_000;
+    state.healthPoll = setInterval(check, 4000);
+    check();
+    async function check() {
+      const runs = await api(`/repos/${state.repo}/actions/workflows/gateway-health.yml/runs?per_page=3`);
+      const run = (runs.workflow_runs || []).find(r => Date.parse(r.created_at) >= since);
+      if (!run || run.status !== "completed") return;
+      clearInterval(state.healthPoll); state.healthPoll = null;
+      $("health-run").disabled = false;
+      refreshHealth();
+    }
+  } catch (e) {
+    $("health-run").disabled = false;
+    detailHealthError(e);
+  }
+}
+function detailHealthError(e) { $("health-detail").textContent = e.message; }
+
+/* ---------- wiring ---------- */
+
+$("connect").addEventListener("click", connect);
+$("pat").addEventListener("keydown", e => { if (e.key === "Enter") connect(); });
+$("start").addEventListener("click", startSignIn);
+$("approve-open").addEventListener("click", () => state.approveUrl && window.open(state.approveUrl, "_blank"));
+$("health-refresh").addEventListener("click", refreshHealth);
+$("health-run").addEventListener("click", runHealthNow);
+
+if (state.token) { // already connected in this tab
+  $("pat").value = state.token;
+  $("repo").value = state.repo;
+  connect();
+}
+</script>
+</body>
+</html>
