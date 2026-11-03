@@ -73,13 +73,16 @@
     <h2>1 · Connect</h2>
     <p class="desc">Needs a GitHub token with access to the repository:
       <b>Actions</b> read/write, <b>Secrets</b> read, <b>Commit statuses</b> read (a classic PAT with <code>repo</code> scope also works).
-      The token stays in this browser tab (session storage) and is sent only to <code>api.github.com</code>.</p>
+      Sent only to <code>api.github.com</code> — kept in this tab (session storage), or on this device if you tick "remember".</p>
     <label for="repo">Repository (owner/name)</label>
     <input id="repo" placeholder="owner/repo" spellcheck="false">
     <label for="pat">GitHub token</label>
     <input id="pat" type="password" placeholder="ghp_… / github_pat_…" spellcheck="false">
+    <label style="margin-top:12px"><input type="checkbox" id="remember" style="width:auto;margin-right:6px">
+      Remember the repository and token on this device (localStorage — stored in the browser profile until you press Forget)</label>
     <div class="row" style="margin-top:12px">
       <button class="primary" id="connect">Connect</button>
+      <button id="forget">Forget</button>
       <span id="connect-status" class="note"></span>
     </div>
   </div>
@@ -120,8 +123,8 @@
 const API = "https://api.github.com";
 const $ = id => document.getElementById(id);
 const state = {
-  token: sessionStorage.getItem("gc_pat") || "",
-  repo: sessionStorage.getItem("gc_repo") || $("repo").value,
+  token: sessionStorage.getItem("gc_pat") || localStorage.getItem("gc_pat") || "",
+  repo: sessionStorage.getItem("gc_repo") || localStorage.getItem("gc_repo") || "",
   branch: null,
   poll: null,          // sign-in run poll
   healthFollow: null,  // health run follow
@@ -174,6 +177,13 @@ async function connect() {
     state.branch = repo.default_branch;
     sessionStorage.setItem("gc_pat", state.token);
     sessionStorage.setItem("gc_repo", state.repo);
+    if ($("remember").checked) {
+      localStorage.setItem("gc_pat", state.token);
+      localStorage.setItem("gc_repo", state.repo);
+      localStorage.setItem("gc_remember", "1");
+    } else {
+      for (const k of ["gc_pat", "gc_repo", "gc_remember"]) localStorage.removeItem(k);
+    }
     $("connect-status").className = "note";
     $("connect-status").textContent = `Connected · ${repo.full_name} (default branch: ${state.branch})`;
     for (const c of ["signin-card", "health-card"]) $(c).hidden = false;
@@ -399,16 +409,29 @@ async function runHealthNow(onDone) {
   find();
 }
 
+function forget() {
+  if (!confirm("Forget the saved repository and token on this device?")) return;
+  for (const s of [sessionStorage, localStorage])
+    for (const k of ["gc_pat", "gc_repo", "gc_remember"]) s.removeItem(k);
+  $("pat").value = ""; $("repo").value = ""; $("remember").checked = false;
+  $("connect-status").textContent = "Forgotten. Enter them again to reconnect.";
+  for (const c of ["signin-card", "health-card"]) $(c).hidden = true;
+  stopPoll();
+  if (state.healthFollow) { clearInterval(state.healthFollow); state.healthFollow = null; }
+}
+
 /* ---------- wiring ---------- */
 
 $("connect").addEventListener("click", connect);
 $("pat").addEventListener("keydown", e => { if (e.key === "Enter") connect(); });
+$("forget").addEventListener("click", forget);
 $("start").addEventListener("click", startSignIn);
 $("approve-open").addEventListener("click", () => state.approveUrl && window.open(state.approveUrl, "_blank"));
 $("health-refresh").addEventListener("click", refreshHealth);
 $("health-run").addEventListener("click", () => runHealthNow());
 
-if (state.token) { // already connected in this tab
+$("remember").checked = localStorage.getItem("gc_remember") === "1" || !!localStorage.getItem("gc_pat");
+if (state.token) { // already connected in this tab or remembered on this device
   $("pat").value = state.token;
   $("repo").value = state.repo;
   connect();
