@@ -261,6 +261,15 @@ async function startSignIn() {
       const jobs = await api(`/repos/${state.repo}/actions/runs/${run.id}/jobs`);
       const job = (jobs.jobs || [])[0];
       if (job) renderSteps(job);
+      else { // no runner assigned yet: show that the run is queued, not stuck
+        const box = $("steps");
+        box.innerHTML = "";
+        const div = document.createElement("div");
+        div.className = "step active";
+        div.textContent = "Queued — waiting for a runner";
+        box.appendChild(div);
+        box.className = "steps show";
+      }
       // Show the approval link as soon as it is available — the one for THIS run.
       if (!state.approveUrl) {
         const st = await api(`/repos/${state.repo}/commits/${run.head_sha}/status`);
@@ -285,7 +294,7 @@ async function startSignIn() {
         if (waitStep.conclusion === "success")
           setStatusLive(st, "Approval received ✓ Saving the sign-in…");
       } else if (state.approveUrl && state.approveClicked) {
-        setStatusLive(st, `Picking up your approval — can take a few seconds… (${elapsed}s)`);
+        setStatusLive(st, `Finish in the other tab — this picks up within seconds of pressing Allow… (${elapsed}s)`);
       } else if (state.approveUrl) {
         setStatusLive(st, `Waiting for your approval… (${elapsed}s)`);
       } else if (run.status !== "completed") {
@@ -437,7 +446,7 @@ $("start").addEventListener("click", startSignIn);
 $("approve-open").addEventListener("click", () => {
   if (!state.approveUrl) return;
   state.approveClicked = true;
-  $("approve-text").textContent = "Once you have approved in the other tab, this page picks it up within a few seconds — it can take up to ~15 s.";
+  $("approve-text").textContent = "Finish the sign-in in the other tab (account, then Allow). This page notices within seconds of you pressing Allow.";
   window.open(state.approveUrl, "_blank");
 });
 $("health-refresh").addEventListener("click", refreshHealth);
