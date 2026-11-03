@@ -34,20 +34,32 @@
   .status.show { display: block; }
   .status.ok { border-color: rgba(63,185,80,.4); }
   .status.err { border-color: rgba(248,81,73,.4); }
+  .status.live::before { content: ""; display: inline-block; width: 10px; height: 10px;
+    border-radius: 50%; border: 2px solid var(--muted); border-top-color: transparent;
+    animation: spin 1s linear infinite; margin-right: 7px; vertical-align: -1px; }
+  .steps { margin-top: 14px; font-size: 13px; display: none; }
+  .steps.show { display: block; }
+  .step { display: flex; align-items: center; gap: 9px; padding: 3px 0; }
+  .step.pending { color: var(--muted); opacity: .55; }
+  .step::before { content: ""; width: 14px; text-align: center; flex: none; }
+  .step.done { color: var(--text); }
+  .step.done::before { content: "✓"; color: var(--ok); font-weight: 700; }
+  .step.active { color: var(--text); }
+  .step.active::before { width: 10px; height: 10px; border-radius: 50%;
+    border: 2px solid var(--accent); border-top-color: transparent; animation: spin 1s linear infinite; }
+  .step.failed { color: var(--err); }
+  .step.failed::before { content: "✗"; color: var(--err); font-weight: 700; }
   .approve { margin-top: 14px; display: none; padding: 14px; border-radius: 8px;
     border: 1px solid rgba(47,129,247,.5); background: rgba(47,129,247,.08); }
   .approve.show { display: block; }
   .approve .code { font-size: 20px; font-weight: 700; letter-spacing: 1px; margin: 6px 0; }
-  .kv { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .kv { font-size: 12px; color: var(--muted); margin-top: 8px; }
   .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; }
   .pill.ok { background: rgba(63,185,80,.15); color: var(--ok); }
   .pill.err { background: rgba(248,81,73,.15); color: var(--err); }
   .pill.run { background: rgba(210,153,34,.15); color: var(--warn); }
   a { color: var(--accent); }
   .note { font-size: 12px; color: var(--muted); }
-  .spinner { display: inline-block; width: 12px; height: 12px; border-radius: 50%;
-    border: 2px solid var(--muted); border-top-color: transparent; animation: spin 1s linear infinite;
-    vertical-align: -1px; margin-right: 6px; }
   @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
@@ -60,7 +72,7 @@
   <div class="card" id="connect-card">
     <h2>1 · Connect</h2>
     <p class="desc">Needs a GitHub token with access to the repository:
-      <b>Actions</b> read/write, <b>Checks</b> read, <b>Secrets</b> read (a classic PAT with <code>repo</code> scope also works).
+      <b>Actions</b> read/write, <b>Secrets</b> read, <b>Commit statuses</b> read (a classic PAT with <code>repo</code> scope also works).
       The token stays in this browser tab (session storage) and is sent only to <code>api.github.com</code>.</p>
     <label for="repo">Repository (owner/name)</label>
     <input id="repo" placeholder="owner/repo" spellcheck="false">
@@ -83,12 +95,14 @@
       <div class="code" id="approve-code"></div>
       <button class="primary" id="approve-open">Open the approval page ↗</button>
     </div>
+    <div class="steps" id="steps"></div>
     <div class="status" id="signin-status"></div>
   </div>
 
   <div class="card" id="health-card" hidden>
     <h2>3 · Gateway health</h2>
-    <p class="desc">The daily check that the CI sign-in, the certificate pin and the pinned models still work.</p>
+    <p class="desc">The daily check that the CI sign-in, the certificate pin and the pinned models still work.
+      A health check runs automatically after every CI sign-in to verify the new sign-in.</p>
     <div class="row">
       <span id="health-pill" class="pill run">…</span>
       <button id="health-refresh">Refresh</button>
@@ -109,14 +123,19 @@ const state = {
   token: sessionStorage.getItem("gc_pat") || "",
   repo: sessionStorage.getItem("gc_repo") || $("repo").value,
   branch: null,
-  poll: null,        // interval id for the sign-in flow
-  healthPoll: null,
+  poll: null,          // sign-in run poll
+  healthFollow: null,  // health run follow
   approveUrl: null,
+  runId: null,
 };
 
 function setStatus(el, text, cls) {
   el.textContent = text;
   el.className = "status show " + (cls || "");
+}
+function setStatusLive(el, text, cls) {
+  setStatus(el, text, cls);
+  el.classList.add("live");
 }
 function stopPoll() { if (state.poll) { clearInterval(state.poll); state.poll = null; } }
 
@@ -155,6 +174,7 @@ async function connect() {
     state.branch = repo.default_branch;
     sessionStorage.setItem("gc_pat", state.token);
     sessionStorage.setItem("gc_repo", state.repo);
+    $("connect-status").className = "note";
     $("connect-status").textContent = `Connected · ${repo.full_name} (default branch: ${state.branch})`;
     for (const c of ["signin-card", "health-card"]) $(c).hidden = false;
     refreshHealth();
@@ -166,17 +186,50 @@ async function connect() {
 
 /* ---------- CI sign-in ---------- */
 
+const STEP_LABELS = [
+  ["Set up job", "Preparing the runner"],
+  ["Check prerequisites", "Checking prerequisites"],
+  ["Start the device login", "Starting the device login"],
+  ["Publish the approval link", "Publishing the approval link"],
+  ["Wait for approval", "Waiting for your browser approval"],
+  ["Store the sign-in secrets", "Storing the sign-in secrets"],
+  ["Close the approval notice", "Finishing up"],
+];
+
+function renderSteps(job) {
+  const box = $("steps");
+  box.innerHTML = "";
+  for (const [name, label] of STEP_LABELS) {
+    const s = (job.steps || []).find(x => x.name === name);
+    if (!s) continue;
+    const div = document.createElement("div");
+    let cls = "pending";
+    if (s.status === "in_progress") cls = "active";
+    else if (s.status === "completed") {
+      if (s.conclusion === "failure" || s.conclusion === "cancelled") cls = "failed";
+      else cls = "done"; // success or skipped
+    }
+    div.className = "step " + cls;
+    div.textContent = label;
+    box.appendChild(div);
+  }
+  box.className = "steps show";
+}
+function hideSteps() { $("steps").className = "steps"; $("steps").innerHTML = ""; }
+
 async function startSignIn() {
   stopPoll();
   $("approve").className = "approve";
   state.approveUrl = null;
+  state.runId = null;
   $("start").disabled = true;
   const st = $("signin-status");
+  hideSteps();
   try {
-    setStatus(st, "Starting the sign-in workflow…");
+    setStatusLive(st, "Dispatching the sign-in workflow…");
     await api(`/repos/${state.repo}/actions/workflows/gateway-login.yml/dispatches`,
       { method: "POST", body: JSON.stringify({ ref: state.branch }) });
-    setStatus(st, "Sign-in workflow dispatched. Waiting for the approval link…");
+    setStatusLive(st, "Sign-in workflow dispatched. Waiting for the approval link…");
   } catch (e) {
     setStatus(st, e.message, "err");
     $("start").disabled = false;
@@ -191,6 +244,11 @@ async function startSignIn() {
       const runs = await api(`/repos/${state.repo}/actions/workflows/gateway-login.yml/runs?per_page=3`);
       const run = (runs.workflow_runs || []).find(r => Date.parse(r.created_at) >= since);
       if (!run) return; // not registered yet
+      state.runId = run.id;
+      // Live step-by-step progress.
+      const jobs = await api(`/repos/${state.repo}/actions/runs/${run.id}/jobs`);
+      const job = (jobs.jobs || [])[0];
+      if (job) renderSteps(job);
       // Show the approval link as soon as the workflow publishes it.
       if (!state.approveUrl) {
         const st = await api(`/repos/${state.repo}/commits/${run.head_sha}/status`);
@@ -201,28 +259,41 @@ async function startSignIn() {
           $("approve-text").textContent = "Approval needed — open the page and approve with the CI account:";
           $("approve-code").textContent = c ? "Code: " + c[1] : "";
           $("approve").className = "approve show";
-          setStatus(st, "Waiting for the browser approval…");
         }
       }
-      if (run.status !== "completed") {
-        if (!state.approveUrl && !st.textContent.includes("Waiting"))
-          setStatus(st, "Sign-in workflow running, waiting for the approval link…");
-        return;
+      // As soon as the approval step is over, retire the approve card and say what runs now.
+      const waitStep = job && (job.steps || []).find(x => x.name === "Wait for approval");
+      if (state.approveUrl && waitStep && waitStep.status === "completed") {
+        $("approve").className = "approve";
+        if (waitStep.conclusion === "success")
+          setStatusLive(st, "Approval received ✓ The workflow is storing the sign-in secrets…");
+      } else if (state.approveUrl) {
+        setStatusLive(st, "Waiting for the browser approval…");
+      } else if (run.status !== "completed") {
+        setStatusLive(st, "Sign-in workflow running, waiting for the approval link…");
       }
+      if (run.status !== "completed") return;
       stopPoll();
       $("start").disabled = false;
+      hideSteps();
+      $("approve").className = "approve";
       if (run.conclusion === "success") {
-        setStatus(st, "Signed in ✓ Checking the secrets…");
-        const secrets = await api(`/repos/${state.repo}/actions/secrets`);
-        const get = n => (secrets.secrets || []).find(s => s.name === n);
-        const rt = get("GW_REFRESH_TOKEN"), pin = get("GW_CERT_PIN");
-        setStatus(st,
-          `CI is signed in ✓\nGW_REFRESH_TOKEN updated ${rt ? new Date(rt.updated_at).toLocaleString() : "?"}\nGW_CERT_PIN updated ${pin ? new Date(pin.updated_at).toLocaleString() : "?"}`,
-          "ok");
-        $("approve").className = "approve";
-        refreshHealth();
+        setStatusLive(st, "Sign-in workflow finished ✓ Reading the secrets' timestamps…", "ok");
+        let info = "GW_REFRESH_TOKEN / GW_CERT_PIN stored (timestamp unknown: the token needs Secrets read)";
+        try {
+          const secrets = await api(`/repos/${state.repo}/actions/secrets`);
+          const get = n => (secrets.secrets || []).find(s => s.name === n);
+          const rt = get("GW_REFRESH_TOKEN"), pin = get("GW_CERT_PIN");
+          info = `GW_REFRESH_TOKEN updated ${rt ? new Date(rt.updated_at).toLocaleString() : "?"}\n` +
+                 `GW_CERT_PIN updated ${pin ? new Date(pin.updated_at).toLocaleString() : "?"}`;
+        } catch { /* token without Secrets read */ }
+        setStatus(st, `CI is signed in ✓\n${info}\nVerifying with a gateway health check…`, "ok");
+        runHealthNow(afterSignInCheck);
       } else {
-        setStatus(st, `Sign-in workflow failed (${run.conclusion}). See the run log:\n${run.html_url}`, "err");
+        const failed = job && (job.steps || []).filter(x => x.conclusion === "failure").map(x => x.name);
+        setStatus(st,
+          `Sign-in workflow failed (${run.conclusion})` + (failed && failed.length ? ` at: ${failed.join(", ")}` : "") +
+          `. See the run log:\n${run.html_url}`, "err");
       }
     } catch (e) {
       stopPoll();
@@ -232,7 +303,24 @@ async function startSignIn() {
   }
 }
 
+function afterSignInCheck(conclusion, runUrl) {
+  const st = $("signin-status");
+  const base = st.textContent.replace(/\nVerifying with a gateway health check…$/, "");
+  if (conclusion === "success")
+    setStatus(st, base + "\nGateway health check after sign-in: healthy ✓", "ok");
+  else
+    setStatus(st, base + `\nGateway health check after sign-in: ${conclusion} — see ${runUrl}`, "err");
+}
+
 /* ---------- Health ---------- */
+
+function healthPill(run) {
+  const pill = $("health-pill");
+  if (!run) { pill.className = "pill run"; pill.textContent = "no runs yet"; return; }
+  if (run.status !== "completed") { pill.className = "pill run"; pill.textContent = "running…"; return; }
+  if (run.conclusion === "success") { pill.className = "pill ok"; pill.textContent = "healthy"; return; }
+  pill.className = "pill err"; pill.textContent = run.conclusion;
+}
 
 async function refreshHealth() {
   const pill = $("health-pill"), detail = $("health-detail");
@@ -240,42 +328,76 @@ async function refreshHealth() {
   try {
     const runs = await api(`/repos/${state.repo}/actions/workflows/gateway-health.yml/runs?per_page=1`);
     const run = (runs.workflow_runs || [])[0];
-    if (!run) { pill.className = "pill run"; pill.textContent = "no runs yet"; return; }
-    if (run.status !== "completed") { pill.className = "pill run"; pill.textContent = "running…"; }
-    else if (run.conclusion === "success") { pill.className = "pill ok"; pill.textContent = "healthy"; }
-    else { pill.className = "pill err"; pill.textContent = run.conclusion; }
+    healthPill(run);
+    if (!run) { detail.textContent = ""; return; }
     detail.innerHTML = `Last run: <a href="${run.html_url}" target="_blank">${new Date(run.created_at).toLocaleString()}</a>` +
-      (run.conclusion === "success" ? " — sign-in, certificate pin and models all OK." :
+      (run.status !== "completed" ? " — following the run live…" :
+        run.conclusion === "success" ? " — sign-in, certificate pin and models all OK." :
         " — check the run; on failure it also opens a repo issue with what to update.");
+    if (run.status !== "completed") followHealthRun(run.id); // someone else started it: follow live
   } catch (e) {
     pill.className = "pill err"; pill.textContent = "error";
     detail.textContent = e.message;
   }
 }
 
-async function runHealthNow() {
+function followHealthRun(runId) {
+  if (state.healthFollow) clearInterval(state.healthFollow);
+  const t0 = Date.now();
+  state.healthFollow = setInterval(async () => {
+    try {
+      const run = await api(`/repos/${state.repo}/actions/runs/${runId}`);
+      if (run.status !== "completed" && Date.now() - t0 < 10 * 60_000) return;
+      clearInterval(state.healthFollow); state.healthFollow = null;
+      $("health-run").disabled = false;
+      healthPill(run);
+      const detail = $("health-detail");
+      detail.innerHTML = `Last run: <a href="${run.html_url}" target="_blank">${new Date(run.created_at).toLocaleString()}</a>` +
+        (run.conclusion === "success" ? " — sign-in, certificate pin and models all OK." :
+        " — check the run; on failure it also opens a repo issue with what to update.");
+      if (state.onHealthDone) { const cb = state.onHealthDone; state.onHealthDone = null; cb(run.conclusion, run.html_url); }
+    } catch (e) {
+      clearInterval(state.healthFollow); state.healthFollow = null;
+      $("health-run").disabled = false;
+      $("health-detail").textContent = e.message;
+      if (state.onHealthDone) { const cb = state.onHealthDone; state.onHealthDone = null; cb("error", ""); }
+    }
+  }, 5000);
+}
+
+async function runHealthNow(onDone) {
   $("health-run").disabled = true;
+  $("health-pill").className = "pill run"; $("health-pill").textContent = "running…";
+  $("health-detail").textContent = "Health check dispatched, following the run…";
   try {
     await api(`/repos/${state.repo}/actions/workflows/gateway-health.yml/dispatches`,
       { method: "POST", body: JSON.stringify({ ref: state.branch }) });
-    if (state.healthPoll) clearInterval(state.healthPoll);
-    const since = Date.now() - 60_000;
-    state.healthPoll = setInterval(check, 4000);
-    check();
-    async function check() {
-      const runs = await api(`/repos/${state.repo}/actions/workflows/gateway-health.yml/runs?per_page=3`);
-      const run = (runs.workflow_runs || []).find(r => Date.parse(r.created_at) >= since);
-      if (!run || run.status !== "completed") return;
-      clearInterval(state.healthPoll); state.healthPoll = null;
-      $("health-run").disabled = false;
-      refreshHealth();
-    }
   } catch (e) {
     $("health-run").disabled = false;
-    detailHealthError(e);
+    $("health-pill").className = "pill err"; $("health-pill").textContent = "error";
+    $("health-detail").textContent = e.message;
+    return;
   }
+  const since = Date.now() - 60_000;
+  const t0 = Date.now();
+  state.onHealthDone = onDone || null;
+  const find = setInterval(async () => {
+    try {
+      const runs = await api(`/repos/${state.repo}/actions/workflows/gateway-health.yml/runs?per_page=3`);
+      const run = (runs.workflow_runs || []).find(r => Date.parse(r.created_at) >= since);
+      if (!run && Date.now() - t0 < 30_000) return; // not registered yet
+      clearInterval(find);
+      if (run) followHealthRun(run.id);
+      else { $("health-run").disabled = false; refreshHealth(); }
+    } catch (e) {
+      clearInterval(find);
+      $("health-run").disabled = false;
+      $("health-detail").textContent = e.message;
+      if (state.onHealthDone) { const cb = state.onHealthDone; state.onHealthDone = null; cb("error", ""); }
+    }
+  }, 3000);
+  find();
 }
-function detailHealthError(e) { $("health-detail").textContent = e.message; }
 
 /* ---------- wiring ---------- */
 
@@ -284,7 +406,7 @@ $("pat").addEventListener("keydown", e => { if (e.key === "Enter") connect(); })
 $("start").addEventListener("click", startSignIn);
 $("approve-open").addEventListener("click", () => state.approveUrl && window.open(state.approveUrl, "_blank"));
 $("health-refresh").addEventListener("click", refreshHealth);
-$("health-run").addEventListener("click", runHealthNow);
+$("health-run").addEventListener("click", () => runHealthNow());
 
 if (state.token) { // already connected in this tab
   $("pat").value = state.token;
